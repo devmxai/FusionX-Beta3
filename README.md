@@ -25,7 +25,38 @@ This project does not contain:
 ## Goal
 
 The purpose of this repository is to keep a clean, reusable UI-only baseline so
-the playback/render engine can be rebuilt separately from a fresh foundation.
+the playback, rendering, audio, and export engine can be rebuilt separately
+from a fresh foundation.
+
+## Product Direction
+
+FusionX is intended to evolve into a professional native video editor with:
+
+- a real native playback/render engine on Android
+- a real native playback/render engine on iOS
+- Flutter used for UI only
+- native media execution handled per platform
+- editor-grade transport, preview, audio, and export behavior
+
+The current repository is the clean UI starting point for that rebuild.
+
+## Native Engine Vision
+
+Planned direction after this clean baseline:
+
+- Android:
+  - native video engine
+  - native audio engine
+  - GPU compositor
+  - export pipeline
+- iOS:
+  - native video engine
+  - native audio engine
+  - GPU compositor
+  - export pipeline
+
+The target is an editor-quality experience with smooth preview, synchronized
+audio, accurate seeking, and native performance on both platforms.
 
 ## Notes
 
