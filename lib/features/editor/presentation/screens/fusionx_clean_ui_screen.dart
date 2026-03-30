@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../../core/media/device_media_library_bridge.dart';
+import '../../../../core/media/native_media_thumbnailer.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../engine/bridge/method_channel_fusionx_engine_bridge.dart';
 import '../../../../engine/contracts/engine_contracts.dart';
@@ -60,6 +61,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
   bool _firstFrameRendered = false;
   bool _isTimelineScrubbing = false;
   bool _showScrubPreviewOverlay = false;
+  bool _scrubPreviewCacheLoading = false;
   int _projectWidth = _defaultProjectWidth;
   int _projectHeight = _defaultProjectHeight;
   int _sourceDurationUs = 0;
@@ -82,7 +84,11 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
   };
   final Map<String, Future<Uint8List?>> _thumbnailRequests =
       <String, Future<Uint8List?>>{};
-  Uint8List? _scrubPreviewBytes;
+  Timer? _scrubPreviewWarmupTimer;
+  _ScrubPreviewFrame? _activeScrubPreviewFrame;
+  List<_ScrubPreviewFrame> _scrubPreviewFrames = const <_ScrubPreviewFrame>[];
+  String? _scrubPreviewCacheKey;
+  int _scrubPreviewRequestToken = 0;
 
   bool get _isAndroidFoundationSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
@@ -128,6 +134,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
 
   @override
   void dispose() {
+    _scrubPreviewWarmupTimer?.cancel();
     _eventsSubscription?.cancel();
     if (_renderTargetAttached) {
       unawaited(
@@ -222,6 +229,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           _tracks = _buildPhaseOneTracks();
           _selectedClipId = _hasClip ? _primaryClipId : null;
         });
+        _scheduleScrubPreviewWarmup();
       case FusionXEngineEventType.positionChanged:
         final sourceTimeUs =
             (event.payload['sourceTimeUs'] as num?)?.toInt() ?? _sourceTimeUs;
@@ -232,7 +240,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           if (!_isTimelineScrubbing) {
             _timelineTimeUs = timelineTimeUs;
             _showScrubPreviewOverlay = false;
-            _scrubPreviewBytes = null;
+            _activeScrubPreviewFrame = null;
           }
         });
       case FusionXEngineEventType.playbackStateChanged:
@@ -241,7 +249,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           _playbackStatus = state;
           if (state == FusionXTransportState.playing.name) {
             _showScrubPreviewOverlay = false;
-            _scrubPreviewBytes = null;
+            _activeScrubPreviewFrame = null;
           }
         });
       case FusionXEngineEventType.firstFrameRendered:
@@ -249,15 +257,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           _firstFrameRendered = true;
         });
       case FusionXEngineEventType.scrubFrameAvailable:
-        final frameBytes = event.payload['frameBytes'] as Uint8List?;
-        if (frameBytes == null) {
-          return;
-        }
-        setState(() {
-          _scrubPreviewBytes = frameBytes;
-          _showScrubPreviewOverlay = true;
-          _firstFrameRendered = true;
-        });
+        return;
       case FusionXEngineEventType.trimChanged:
         final trimStartUs =
             (event.payload['trimStartUs'] as num?)?.toInt() ?? _trimStartUs;
@@ -606,7 +606,10 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
       _sourceTimeUs = 0;
       _timelineTimeUs = 0;
       _showScrubPreviewOverlay = false;
-      _scrubPreviewBytes = null;
+      _activeScrubPreviewFrame = null;
+      _scrubPreviewFrames = const <_ScrubPreviewFrame>[];
+      _scrubPreviewCacheKey = null;
+      _scrubPreviewCacheLoading = false;
       if (asset.width != null && asset.height != null && asset.height! > 0) {
         _projectWidth = asset.width!;
         _projectHeight = asset.height!;
@@ -629,6 +632,13 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     if (!_hasClip || !_canUseNativePlayback) {
       return;
     }
+    if (!_isPlaying) {
+      _scrubPreviewWarmupTimer?.cancel();
+    }
+    setState(() {
+      _showScrubPreviewOverlay = false;
+      _activeScrubPreviewFrame = null;
+    });
     await _engineBridge.dispatch(
       FusionXEngineCommand(
         type: _isPlaying
@@ -641,19 +651,29 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
   void _setCurrentSeconds(double seconds) {
     final clampedSeconds = seconds.clamp(0.0, _timelineDuration).toDouble();
     final timelineTimeUs = (clampedSeconds * 1000000).round();
+    final previewFrame = _isTimelineScrubbing
+        ? _resolveScrubPreviewFrame(timelineTimeUs)
+        : null;
     setState(() {
       _timelineTimeUs = timelineTimeUs;
+      if (_isTimelineScrubbing && previewFrame != null) {
+        _activeScrubPreviewFrame = previewFrame;
+        _showScrubPreviewOverlay = true;
+      }
     });
     if (!_hasClip || !_canUseNativePlayback) {
       return;
     }
-    final commandType = _isTimelineScrubbing
-        ? FusionXEngineCommandType.scrubTo
-        : FusionXEngineCommandType.seekTo;
+    if (_isTimelineScrubbing) {
+      if (previewFrame == null) {
+        _scheduleScrubPreviewWarmup(immediate: true);
+      }
+      return;
+    }
     unawaited(
       _engineBridge.dispatch(
         FusionXEngineCommand(
-          type: commandType,
+          type: FusionXEngineCommandType.seekTo,
           payload: SeekToPayload(
             timelineTime: EngineTime.fromMicroseconds(timelineTimeUs),
           ).toMap(),
@@ -668,6 +688,16 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     }
     setState(() {
       _isTimelineScrubbing = isScrubbing;
+      if (isScrubbing) {
+        final previewFrame = _resolveScrubPreviewFrame(_timelineTimeUs);
+        if (previewFrame != null) {
+          _activeScrubPreviewFrame = previewFrame;
+          _showScrubPreviewOverlay = true;
+        }
+      } else {
+        _showScrubPreviewOverlay = false;
+        _activeScrubPreviewFrame = null;
+      }
     });
     if (isScrubbing) {
       if (_isPlaying) {
@@ -675,6 +705,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           type: FusionXEngineCommandType.pause,
         )));
       }
+      _scheduleScrubPreviewWarmup(immediate: true);
       return;
     }
     if (!_hasClip || !_canUseNativePlayback) {
@@ -690,6 +721,161 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
         ),
       ),
     );
+  }
+
+  void _scheduleScrubPreviewWarmup({bool immediate = false}) {
+    _scrubPreviewWarmupTimer?.cancel();
+    if (immediate) {
+      unawaited(_ensureScrubPreviewCache());
+      return;
+    }
+    _scrubPreviewWarmupTimer = Timer(
+      const Duration(milliseconds: 320),
+      () {
+        unawaited(_ensureScrubPreviewCache());
+      },
+    );
+  }
+
+  Future<void> _ensureScrubPreviewCache() async {
+    final selectedAsset = _selectedAsset;
+    final assetPath = selectedAsset?.localPath;
+    if (selectedAsset == null ||
+        selectedAsset.tab != EditorMediaTab.video ||
+        assetPath == null ||
+        assetPath.isEmpty ||
+        _sourceDurationUs <= 0) {
+      return;
+    }
+    if (_isPlaying) {
+      return;
+    }
+
+    final cacheKey = [
+      assetPath,
+      _sourceDurationUs,
+      _projectWidth,
+      _projectHeight,
+    ].join('|');
+    if (_scrubPreviewCacheKey == cacheKey &&
+        (_scrubPreviewFrames.isNotEmpty || _scrubPreviewCacheLoading)) {
+      return;
+    }
+
+    final requestToken = ++_scrubPreviewRequestToken;
+    final timestampsUs = _buildScrubPreviewTimestampsUs(_sourceDurationUs);
+    if (timestampsUs.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _scrubPreviewCacheKey = cacheKey;
+      _scrubPreviewCacheLoading = true;
+      _scrubPreviewFrames = const <_ScrubPreviewFrame>[];
+    });
+
+    try {
+      final thumbnails = await NativeMediaThumbnailer.generateVideoThumbnails(
+        path: assetPath,
+        timestampsSeconds: <double>[
+          for (final timestampUs in timestampsUs) timestampUs / 1000000,
+        ],
+        targetWidth: _scrubPreviewTargetWidth,
+        targetHeight: _scrubPreviewTargetHeight,
+      );
+      if (!mounted ||
+          requestToken != _scrubPreviewRequestToken ||
+          _scrubPreviewCacheKey != cacheKey) {
+        return;
+      }
+
+      final resolvedCount = math.min(timestampsUs.length, thumbnails.length);
+      final frames = <_ScrubPreviewFrame>[
+        for (var index = 0; index < resolvedCount; index++)
+          _ScrubPreviewFrame(
+            sourceTimeUs: timestampsUs[index],
+            imageProvider: MemoryImage(thumbnails[index]),
+          ),
+      ];
+
+      setState(() {
+        _scrubPreviewFrames = List<_ScrubPreviewFrame>.unmodifiable(frames);
+        _scrubPreviewCacheLoading = false;
+      });
+      for (final frame in frames.take(18)) {
+        unawaited(precacheImage(frame.imageProvider, context));
+      }
+    } on MissingPluginException {
+      if (!mounted || requestToken != _scrubPreviewRequestToken) {
+        return;
+      }
+      setState(() {
+        _scrubPreviewCacheLoading = false;
+      });
+    } on PlatformException {
+      if (!mounted || requestToken != _scrubPreviewRequestToken) {
+        return;
+      }
+      setState(() {
+        _scrubPreviewCacheLoading = false;
+      });
+    }
+  }
+
+  List<int> _buildScrubPreviewTimestampsUs(int sourceDurationUs) {
+    if (sourceDurationUs <= 0) {
+      return const <int>[];
+    }
+
+    final durationSeconds = sourceDurationUs / 1000000;
+    final sampleCount =
+        math.min(240, math.max(48, (durationSeconds * 15).round()));
+    if (sampleCount <= 1) {
+      return <int>[0, sourceDurationUs];
+    }
+
+    final stepUs = sourceDurationUs / (sampleCount - 1);
+    return List<int>.generate(sampleCount, (index) {
+      final timestampUs = (stepUs * index).round();
+      return timestampUs.clamp(0, sourceDurationUs).toInt();
+    }, growable: false);
+  }
+
+  int get _scrubPreviewTargetWidth {
+    final safeWidth = _projectWidth <= 0 ? _defaultProjectWidth : _projectWidth;
+    final safeHeight =
+        _projectHeight <= 0 ? _defaultProjectHeight : _projectHeight;
+    final maxEdge = math.max(safeWidth, safeHeight);
+    final scale = maxEdge > 220 ? 220 / maxEdge : 1.0;
+    return math.max(120, (safeWidth * scale).round());
+  }
+
+  int get _scrubPreviewTargetHeight {
+    final safeWidth = _projectWidth <= 0 ? _defaultProjectWidth : _projectWidth;
+    final safeHeight =
+        _projectHeight <= 0 ? _defaultProjectHeight : _projectHeight;
+    final maxEdge = math.max(safeWidth, safeHeight);
+    final scale = maxEdge > 220 ? 220 / maxEdge : 1.0;
+    return math.max(120, (safeHeight * scale).round());
+  }
+
+  _ScrubPreviewFrame? _resolveScrubPreviewFrame(int timelineTimeUs) {
+    final previewFrames = _scrubPreviewFrames;
+    if (previewFrames.isEmpty) {
+      return null;
+    }
+    final targetSourceUs =
+        (_trimStartUs + timelineTimeUs).clamp(_trimStartUs, _trimEndUs).toInt();
+    _ScrubPreviewFrame? nearestFrame;
+    var nearestDistance = 1 << 62;
+    for (final frame in previewFrames) {
+      final distance = (frame.sourceTimeUs - targetSourceUs).abs();
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestFrame = frame;
+      }
+    }
+    return nearestFrame;
   }
 
   void _selectClip(String clipId) {
@@ -828,7 +1014,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
                       hasClip: _hasClip,
                       playbackStatus: _playbackStatus,
                       firstFrameRendered: _firstFrameRendered,
-                      scrubPreviewBytes: _scrubPreviewBytes,
+                      scrubPreviewFrame: _activeScrubPreviewFrame,
                       showScrubPreviewOverlay: _showScrubPreviewOverlay,
                       lastError: _lastError,
                     ),
@@ -932,7 +1118,7 @@ class _CleanPreviewCanvas extends StatelessWidget {
     required this.hasClip,
     required this.playbackStatus,
     required this.firstFrameRendered,
-    required this.scrubPreviewBytes,
+    required this.scrubPreviewFrame,
     required this.showScrubPreviewOverlay,
     required this.lastError,
   });
@@ -946,7 +1132,7 @@ class _CleanPreviewCanvas extends StatelessWidget {
   final bool hasClip;
   final String playbackStatus;
   final bool firstFrameRendered;
-  final Uint8List? scrubPreviewBytes;
+  final _ScrubPreviewFrame? scrubPreviewFrame;
   final bool showScrubPreviewOverlay;
   final String? lastError;
 
@@ -969,14 +1155,14 @@ class _CleanPreviewCanvas extends StatelessWidget {
           children: [
             if (textureId != null && textureId! >= 0 && hasClip)
               Texture(textureId: textureId!),
-            if (showScrubPreviewOverlay && scrubPreviewBytes != null && hasClip)
+            if (showScrubPreviewOverlay && scrubPreviewFrame != null && hasClip)
               ColoredBox(
                 color: Colors.black,
-                child: Image.memory(
-                  scrubPreviewBytes!,
+                child: Image(
+                  image: scrubPreviewFrame!.imageProvider,
                   fit: BoxFit.contain,
                   gaplessPlayback: true,
-                  filterQuality: FilterQuality.medium,
+                  filterQuality: FilterQuality.low,
                 ),
               ),
             if (!hasClip || !firstFrameRendered)
@@ -1076,6 +1262,16 @@ class _CleanPreviewCanvas extends StatelessWidget {
     }
     return 'The selected clip is being prepared inside the native preview pipeline.';
   }
+}
+
+class _ScrubPreviewFrame {
+  const _ScrubPreviewFrame({
+    required this.sourceTimeUs,
+    required this.imageProvider,
+  });
+
+  final int sourceTimeUs;
+  final MemoryImage imageProvider;
 }
 
 class _CanvasMessage extends StatelessWidget {

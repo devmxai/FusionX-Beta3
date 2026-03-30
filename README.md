@@ -89,8 +89,16 @@ This issue is currently being investigated across:
 
 - timeline gesture dispatch
 - Flutter to native scrub command flow
-- native scrub frame generation
-- preview texture and overlay synchronization
+- native scrub cache generation
+- native preview texture synchronization
+
+Latest attempt in progress:
+
+- live scrub now uses a proxy preview cache instead of native per-drag frame extraction
+- exact native seek is only committed after the finger is released
+- scrub cache warmup is delayed so it does not immediately compete with first playback
+- exact device validation is still required to confirm whether this fully closes
+  the issue on real Android hardware
 
 This is the current top blocking issue before moving forward to more advanced
 editor behaviors.

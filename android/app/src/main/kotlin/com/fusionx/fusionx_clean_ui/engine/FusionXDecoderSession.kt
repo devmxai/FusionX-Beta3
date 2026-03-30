@@ -23,7 +23,6 @@ class FusionXDecoderSession(
         applicationContext = applicationContext,
         renderTarget = renderTarget,
         transport = transport,
-        events = events,
     )
 
     private var activeTask: Future<*>? = null
@@ -142,8 +141,6 @@ class FusionXDecoderSession(
         val localDecoder = MediaCodec.createDecoderByType(mime)
         localDecoder.configure(format, renderTarget.surface, null, 0)
         localDecoder.start()
-        scrubPreviewRenderer.loadClip(path)
-
         synchronized(resourceLock) {
             extractor = localExtractor
             decoder = localDecoder
@@ -153,6 +150,7 @@ class FusionXDecoderSession(
         }
 
         val durationUs = format.getLongSafely(MediaFormat.KEY_DURATION, 0L)
+        scrubPreviewRenderer.loadClip(path, durationUs)
         transport.onClipLoaded(
             sourceDurationUs = durationUs,
             sourceWidth = width,

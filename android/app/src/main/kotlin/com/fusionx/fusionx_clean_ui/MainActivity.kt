@@ -6,6 +6,7 @@ import android.content.ContentUris
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -20,6 +21,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
+import kotlin.math.roundToLong
 
 class MainActivity : FlutterActivity() {
     private var fusionXEnginePlugin: FusionXEnginePlugin? = null
@@ -106,6 +108,50 @@ class MainActivity : FlutterActivity() {
                                 result.error(
                                     "thumbnail_failed",
                                     throwable.message ?: "Unable to load media thumbnail.",
+                                    null,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            MEDIA_THUMBNAILER_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "generateVideoThumbnails" -> {
+                    val path = call.argument<String>("path")
+                        ?: run {
+                            result.error("missing_path", "Missing video path.", null)
+                            return@setMethodCallHandler
+                        }
+                    val timestamps = call.argument<List<Number>>("timestampsSeconds")
+                        ?.map { it.toDouble() }
+                        ?.filter { it >= 0.0 }
+                        ?: emptyList()
+                    val targetWidth = call.argument<Number>("targetWidth")?.toInt() ?: 160
+                    val targetHeight = call.argument<Number>("targetHeight")?.toInt() ?: 90
+                    mediaExecutor.execute {
+                        try {
+                            val thumbnails = generateVideoThumbnails(
+                                path = path,
+                                timestampsSeconds = timestamps,
+                                targetWidth = targetWidth,
+                                targetHeight = targetHeight,
+                            )
+                            mainHandler.post {
+                                result.success(thumbnails)
+                            }
+                        } catch (throwable: Throwable) {
+                            mainHandler.post {
+                                result.error(
+                                    "thumbnail_generation_failed",
+                                    throwable.message ?: "Unable to generate scrub thumbnails.",
                                     null,
                                 )
                             }
@@ -359,6 +405,81 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun generateVideoThumbnails(
+        path: String,
+        timestampsSeconds: List<Double>,
+        targetWidth: Int,
+        targetHeight: Int,
+    ): List<ByteArray> {
+        if (timestampsSeconds.isEmpty()) {
+            return emptyList()
+        }
+
+        val retriever = MediaMetadataRetriever()
+        try {
+            if (path.startsWith("content://") || path.startsWith("file://")) {
+                retriever.setDataSource(applicationContext, Uri.parse(path))
+            } else {
+                retriever.setDataSource(path)
+            }
+
+            return timestampsSeconds.mapNotNull { timestampSeconds ->
+                loadRetrieverFrame(
+                    retriever = retriever,
+                    sourceTimeUs = (timestampSeconds * 1_000_000.0).roundToLong(),
+                    targetWidth = targetWidth,
+                    targetHeight = targetHeight,
+                )
+            }
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun loadRetrieverFrame(
+        retriever: MediaMetadataRetriever,
+        sourceTimeUs: Long,
+        targetWidth: Int,
+        targetHeight: Int,
+    ): ByteArray? {
+        val safeWidth = targetWidth.coerceAtLeast(1)
+        val safeHeight = targetHeight.coerceAtLeast(1)
+        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            retriever.getScaledFrameAtTime(
+                sourceTimeUs,
+                MediaMetadataRetriever.OPTION_CLOSEST,
+                safeWidth,
+                safeHeight,
+            )
+        } else {
+            val rawBitmap = retriever.getFrameAtTime(
+                sourceTimeUs,
+                MediaMetadataRetriever.OPTION_CLOSEST,
+            ) ?: return null
+            if (rawBitmap.width == safeWidth && rawBitmap.height == safeHeight) {
+                rawBitmap
+            } else {
+                Bitmap.createScaledBitmap(rawBitmap, safeWidth, safeHeight, true).also {
+                    if (it != rawBitmap) {
+                        rawBitmap.recycle()
+                    }
+                }
+            }
+        } ?: return null
+
+        return ByteArrayOutputStream().use { outputStream ->
+            val encoded = bitmap.compress(Bitmap.CompressFormat.JPEG, 72, outputStream)
+            bitmap.recycle()
+            if (!encoded) {
+                return null
+            }
+            outputStream.toByteArray()
+        }
+    }
+
     private fun launchVideoPicker() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -377,6 +498,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val DEBUG_PICKER_CHANNEL = "fusionx.debug/picker"
         private const val MEDIA_LIBRARY_CHANNEL = "fusionx.media/library"
+        private const val MEDIA_THUMBNAILER_CHANNEL = "fusionx.media/thumbnailer"
         private const val VIDEO_PICKER_REQUEST_CODE = 2041
         private const val MEDIA_PERMISSION_REQUEST_CODE = 2042
     }

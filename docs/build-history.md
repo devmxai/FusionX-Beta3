@@ -10,6 +10,43 @@
 
 ## Releases
 
+### V11
+
+- APK name:
+  - `Fusion X V11 - Proxy Scrub Cache Overlay.apk`
+- Shorthand:
+  - `PSC + ESR + RLS`
+- Meaning:
+  - `PSC` = proxy scrub cache
+  - `ESR` = exact seek on release
+  - `RLS` = release APK build
+- Notes:
+  - live scrub no longer depends on native per-drag frame extraction
+  - timeline dragging now uses a prebuilt preview cache inside Flutter for immediate proxy-frame display
+  - exact native `seekTo` is committed only after the user lifts the finger
+  - delayed native scrub rendering path was removed from the active gesture flow
+  - scrub cache warmup is delayed and canceled before playback start to reduce first-play lag
+  - release APK built successfully
+  - device validation is required to confirm whether live preview now tracks the finger directly
+
+### V10
+
+- APK name:
+  - `Fusion X V10 - Native Scrub Cache Surface.apk`
+- Shorthand:
+  - `NSC + NTS + RLS`
+- Meaning:
+  - `NSC` = native scrub cache
+  - `NTS` = native texture surface
+  - `RLS` = release APK build
+- Notes:
+  - removed the live scrub overlay path that depended on JPEG bytes and `Image.memory` in Flutter
+  - scrub preview now renders directly into the existing native texture surface during drag
+  - added a low-resolution native scrub cache that warms in the background after clip load
+  - when the cache is not ready yet, scrub still falls back to direct native frame extraction on the same surface path
+  - release APK built successfully
+  - device validation is still required to confirm that finger movement and preview are now visually synchronized
+
 ### V9
 
 - APK name:

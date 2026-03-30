@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
-import java.io.ByteArrayOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -14,7 +13,6 @@ class FusionXScrubPreviewRenderer(
     private val applicationContext: Context,
     private val renderTarget: FusionXRenderTarget,
     private val transport: FusionXTransport,
-    private val events: FusionXEventDispatcher,
 ) {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val lock = Any()
@@ -25,7 +23,7 @@ class FusionXScrubPreviewRenderer(
     private var pendingSourceTimeUs: Long? = null
     private var generation = 0L
 
-    fun loadClip(path: String) {
+    fun loadClip(path: String, sourceDurationUs: Long) {
         clearPending()
         releaseRetriever()
 
@@ -37,6 +35,7 @@ class FusionXScrubPreviewRenderer(
         }
 
         synchronized(lock) {
+            generation += 1L
             retriever = nextRetriever
         }
     }
@@ -99,16 +98,6 @@ class FusionXScrubPreviewRenderer(
 
             renderTarget.drawBitmap(bitmap)
             transport.setSourcePositionUs(sourceTimeUs)
-            val encodedBytes = encodeBitmap(bitmap)
-            if (encodedBytes != null && !isRequestInvalidated(requestGeneration)) {
-                events.emit(
-                    "scrubFrameAvailable",
-                    mapOf(
-                        "sourceTimeUs" to sourceTimeUs,
-                        "frameBytes" to encodedBytes,
-                    ),
-                )
-            }
             bitmap.recycle()
         }
     }
@@ -149,8 +138,8 @@ class FusionXScrubPreviewRenderer(
         val targetWidth = renderTarget.width.coerceAtLeast(1)
         val targetHeight = renderTarget.height.coerceAtLeast(1)
         val maxEdge = maxOf(targetWidth, targetHeight).coerceAtLeast(1)
-        val scale = if (maxEdge > 480) {
-            480f / maxEdge.toFloat()
+        val scale = if (maxEdge > 180) {
+            180f / maxEdge.toFloat()
         } else {
             1f
         }
@@ -158,16 +147,6 @@ class FusionXScrubPreviewRenderer(
             (targetWidth * scale).toInt().coerceAtLeast(1),
             (targetHeight * scale).toInt().coerceAtLeast(1),
         )
-    }
-
-    private fun encodeBitmap(bitmap: Bitmap): ByteArray? {
-        return ByteArrayOutputStream().use { outputStream ->
-            val encoded = bitmap.compress(Bitmap.CompressFormat.JPEG, 72, outputStream)
-            if (!encoded) {
-                return null
-            }
-            outputStream.toByteArray()
-        }
     }
 
     private fun hasPendingRequest(): Boolean {
