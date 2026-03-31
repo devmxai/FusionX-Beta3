@@ -44,12 +44,16 @@ class FusionXProxyConformer(
         if (proxyFile.exists() && proxyFile.length() > 0L) {
             val sourceDurationUs = readDurationUs(sourcePath)
             val proxyDurationUs = readDurationUs(proxyFile.absolutePath)
+            val sourceFrameTimesUs = readVideoSampleTimesUs(sourcePath)
+            val proxyFrameTimesUs = readVideoSampleTimesUs(proxyFile.absolutePath)
             onReady(
                 FusionXProxyAsset(
                     path = proxyFile.absolutePath,
                     shortSide = proxyShortSide,
                     sourceDurationUs = sourceDurationUs,
                     proxyDurationUs = proxyDurationUs,
+                    sourceFrameTimesUs = sourceFrameTimesUs,
+                    proxyFrameTimesUs = proxyFrameTimesUs,
                 ),
             )
             return
@@ -127,12 +131,16 @@ class FusionXProxyConformer(
                             }
                             val sourceDurationUs = readDurationUs(sourcePath)
                             val proxyDurationUs = readDurationUs(proxyFile.absolutePath)
+                            val sourceFrameTimesUs = readVideoSampleTimesUs(sourcePath)
+                            val proxyFrameTimesUs = readVideoSampleTimesUs(proxyFile.absolutePath)
                             onReady(
                                 FusionXProxyAsset(
                                     path = proxyFile.absolutePath,
                                     shortSide = proxyShortSide,
                                     sourceDurationUs = sourceDurationUs,
                                     proxyDurationUs = proxyDurationUs,
+                                    sourceFrameTimesUs = sourceFrameTimesUs,
+                                    proxyFrameTimesUs = proxyFrameTimesUs,
                                 ),
                             )
                         }
@@ -247,6 +255,52 @@ class FusionXProxyConformer(
         }
     }
 
+    private fun readVideoSampleTimesUs(path: String): LongArray {
+        val extractor = MediaExtractor()
+        return try {
+            val uri = resolveMediaUri(path)
+            if (path.startsWith("content://") || path.startsWith("file://")) {
+                extractor.setDataSource(applicationContext, uri, null)
+            } else {
+                extractor.setDataSource(path)
+            }
+
+            var videoTrackIndex = -1
+            for (trackIndex in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(trackIndex)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    videoTrackIndex = trackIndex
+                    break
+                }
+            }
+            if (videoTrackIndex < 0) {
+                return LongArray(0)
+            }
+
+            extractor.selectTrack(videoTrackIndex)
+            val sampleTimesUs = ArrayList<Long>(512)
+            while (true) {
+                val sampleTimeUs = extractor.sampleTime
+                if (sampleTimeUs < 0L) {
+                    break
+                }
+                sampleTimesUs.add(sampleTimeUs)
+                if (!extractor.advance()) {
+                    break
+                }
+            }
+            LongArray(sampleTimesUs.size) { index -> sampleTimesUs[index] }
+        } catch (_: Throwable) {
+            LongArray(0)
+        } finally {
+            try {
+                extractor.release()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     private fun resolveProxySize(width: Int, height: Int, shortSide: Int): Pair<Int, Int> {
         val safeWidth = width.coerceAtLeast(1)
         val safeHeight = height.coerceAtLeast(1)
@@ -269,8 +323,8 @@ class FusionXProxyConformer(
     companion object {
         private const val MIN_PROXY_SHORT_SIDE = 360
         private const val MAX_PROXY_SHORT_SIDE = 480
-        private const val PROXY_TARGET_BITRATE = 1_400_000
-        private const val PROXY_IFRAME_INTERVAL_SECONDS = 0.1f
-        private const val PROXY_SCHEMA_VERSION = "proxy_v2_dense_iframe"
+        private const val PROXY_TARGET_BITRATE = 3_000_000
+        private const val PROXY_IFRAME_INTERVAL_SECONDS = 0f
+        private const val PROXY_SCHEMA_VERSION = "proxy_v3_all_intra"
     }
 }

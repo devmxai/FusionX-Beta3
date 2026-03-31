@@ -25,6 +25,8 @@ class FusionXDecoderSession(
     private val resizeRenderTargetOnLoad: Boolean = true,
     private val scrubForwardContinuationWindowUs: Long = SCRUB_FORWARD_CONTINUATION_WINDOW_US,
     private val scrubProgressiveTargetWindowUs: Long = SCRUB_PROGRESSIVE_TARGET_WINDOW_US,
+    private val scrubSeekMode: Int = MediaExtractor.SEEK_TO_PREVIOUS_SYNC,
+    private val reverseScrubPrerollUs: Long = 0L,
 ) {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private val resourceLock = Any()
@@ -75,8 +77,15 @@ class FusionXDecoderSession(
         }
     }
 
-    fun scrubToTimelineTimeUs(timelineTimeUs: Long) {
+    fun scrubToTimelineTimeUs(
+        timelineTimeUs: Long,
+        forceReprepare: Boolean = false,
+    ) {
         cancelActiveTask()
+        if (forceReprepare) {
+            clearDecoderContinuationReady()
+            cancelScrubTask()
+        }
         val targetSourceTimeUs = transport.timelineToSourceTimeUs(timelineTimeUs)
         enqueueScrubSourceTimeUs(targetSourceTimeUs)
     }
@@ -198,7 +207,15 @@ class FusionXDecoderSession(
                         currentDecodedSourceTimeUs = currentDecodedSourceTimeUs,
                     )
                 ) {
-                    currentDecodedSourceTimeUs = prepareCodecForSourceTimeUs(targetSourceTimeUs)
+                    val prepareSourceTimeUs = resolveScrubPrepareSourceTimeUs(
+                        targetSourceTimeUs = targetSourceTimeUs,
+                        currentDecodedSourceTimeUs = currentDecodedSourceTimeUs,
+                    )
+                    currentDecodedSourceTimeUs =
+                        prepareCodecForSourceTimeUs(
+                            prepareSourceTimeUs,
+                            seekMode = scrubSeekMode,
+                        )
                     streamCanContinue = true
                 }
 
@@ -513,9 +530,10 @@ class FusionXDecoderSession(
         targetSourceTimeUs: Long,
         emitPositionEvent: Boolean = true,
         dequeueTimeoutUs: Long = PLAY_DEQUEUE_TIMEOUT_US,
+        seekMode: Int = MediaExtractor.SEEK_TO_PREVIOUS_SYNC,
     ) {
         ensureLoaded()
-        prepareCodecForSourceTimeUs(targetSourceTimeUs)
+        prepareCodecForSourceTimeUs(targetSourceTimeUs, seekMode)
 
         val outputBufferInfo = MediaCodec.BufferInfo()
         val trimEndUs = transport.currentTrimEndUs()
@@ -569,12 +587,15 @@ class FusionXDecoderSession(
         }
     }
 
-    private fun prepareCodecForSourceTimeUs(sourceTimeUs: Long): Long {
+    private fun prepareCodecForSourceTimeUs(
+        sourceTimeUs: Long,
+        seekMode: Int = MediaExtractor.SEEK_TO_PREVIOUS_SYNC,
+    ): Long {
         val activeExtractor = requireExtractor()
         val activeDecoder = requireDecoder()
         activeExtractor.seekTo(
             timeMapper.sourceToMediaTimeUs(sourceTimeUs),
-            MediaExtractor.SEEK_TO_PREVIOUS_SYNC,
+            seekMode,
         )
         val preparedSourceTimeUs = timeMapper.mediaToSourceTimeUs(
             activeExtractor.sampleTime.coerceAtLeast(0L),
@@ -699,6 +720,20 @@ class FusionXDecoderSession(
         }
         return (safeTargetSourceTimeUs - currentDecodedSourceTimeUs) >
             scrubForwardContinuationWindowUs
+    }
+
+    private fun resolveScrubPrepareSourceTimeUs(
+        targetSourceTimeUs: Long,
+        currentDecodedSourceTimeUs: Long,
+    ): Long {
+        val safeTargetSourceTimeUs = targetSourceTimeUs.coerceAtLeast(0L)
+        if (safeTargetSourceTimeUs >= currentDecodedSourceTimeUs ||
+            reverseScrubPrerollUs <= 0L
+        ) {
+            return safeTargetSourceTimeUs
+        }
+        return (safeTargetSourceTimeUs - reverseScrubPrerollUs)
+            .coerceAtLeast(transport.currentTrimStartUs())
     }
 
     private fun canContinueDecoderFrom(sourceTimeUs: Long): Boolean {

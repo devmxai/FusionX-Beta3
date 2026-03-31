@@ -10,6 +10,257 @@
 
 ## Releases
 
+### V51
+
+- APK name:
+  - `Fusion X V51 - Immediate Reverse Frame Step.apk`
+- Milestone label:
+  - `FusionX-Beta5`
+- Shorthand:
+  - `IRF + RST + RLS`
+- Meaning:
+  - `IRF` = immediate reverse frame
+  - `RST` = reverse start tuning
+  - `RLS` = release APK build
+- Notes:
+  - on reverse direction flip, stable scrub now steps immediately to the
+    previous frame from the current stable frame instead of waiting for the raw
+    drag position to consume a small in-frame dead zone first
+  - this specifically targets the remaining first-pixels blank space the user
+    still felt before backward scrub visibly started
+  - this build is the `Beta 5` baseline used to close the current
+    preview/scrub stabilization phase and move on to the next editor phases
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+
+### V50
+
+- APK name:
+  - `Fusion X V50 - Reverse Start Dead Zone Fix.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RDZ + SFD + RLS`
+- Meaning:
+  - `RDZ` = reverse dead zone
+  - `SFD` = start-frame direction flip
+  - `RLS` = release APK build
+- Notes:
+  - `TimelinePanel` now preserves the current pointer delta when scrub
+    direction flips, so the first reverse move does not collapse to a zero-step
+  - screen-side stable scrub no longer returns the same stable frame
+    immediately on direction flip and wait for a second move before reverse
+    actually begins
+  - this specifically targets the small blank/freeze users still felt at the
+    start of backward scrub even after forward scrub became smooth
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+
+### V49
+
+- APK name:
+  - `Fusion X V49 - Reverse Direction Flip Decoupling.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RDF + IDS + RLS`
+- Meaning:
+  - `RDF` = reverse direction flip
+  - `IDS` = immediate dispatch scrub
+  - `RLS` = release APK build
+- Notes:
+  - Flutter no longer forces native `forceReprepare` on every direction flip
+    during scrub; it now sends the first reverse target immediately and lets
+    native scrub policy decide whether decoder reprepare is actually needed
+  - this specifically targets the remaining backward-only cut where reverse was
+    being made colder than forward by the screen layer itself
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+
+### V48
+
+- APK name:
+  - `Fusion X V48 - Indexed Proxy Time Map.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `IPM + CSS + RLS`
+- Meaning:
+  - `IPM` = indexed proxy mapper
+  - `CSS` = closest-sync scrub
+  - `RLS` = release APK build
+- Notes:
+  - proxy scrub now builds a frame-indexed time mapper from both the source
+    video and the generated proxy video instead of relying only on duration
+    ratio mapping
+  - reverse scrub can now resolve source-to-proxy and proxy-to-source times at
+    frame granularity, which targets the remaining backward-only cut/stutter
+  - proxy scrub now uses `SEEK_TO_CLOSEST_SYNC`, which better matches the
+    all-intra proxy lane than `SEEK_TO_PREVIOUS_SYNC`
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+
+### V47
+
+- APK name:
+  - `Fusion X V47 - Reverse Scrub Phase Reset.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RPR + ZPR + RLS`
+- Meaning:
+  - `RPR` = reverse phase reset
+  - `ZPR` = zero reverse preroll
+  - `RLS` = release APK build
+- Notes:
+  - reverse scrub direction flips now force an immediate scrub reprepare
+    instead of waiting for the regular frame-paced scrub queue
+  - the first reverse step now bypasses the inherited forward hysteresis path,
+    which targets the small cut/stickiness right at the start of backward drag
+  - proxy reverse scrub preroll was removed because the current proxy path is
+    already regenerated as all-intra media, so the extra `180ms` backward bias
+    only made the first reverse frame feel older than the finger target
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+  - release APK artifact was produced at
+    `build/app/outputs/flutter-apk/app-release.apk`
+
+### V46
+
+- APK name:
+  - `Fusion X V46 - All Intra Proxy Scrub.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `AIP + PRT + RLS`
+- Meaning:
+  - `AIP` = all-intra proxy
+  - `PRT` = proxy regeneration target
+  - `RLS` = release APK build
+- Notes:
+  - scrub proxy encoding now requests an all-intra H.264 profile by setting the
+    I-frame interval to `0`, which is intended to make every proxy frame a sync
+    frame instead of relying on short GOPs
+  - proxy bitrate was raised so the all-intra proxy keeps a cleaner preview
+    while reverse scrub uses sync-frame-friendly media
+  - proxy schema version was bumped so devices regenerate old cached proxies
+    instead of reusing the previous dense-keyframe proxy files
+
+### V45
+
+- APK name:
+  - `Fusion X V45 - Reverse Scrub Progressive Preroll.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RPP + GAR + RLS`
+- Meaning:
+  - `RPP` = reverse progressive preroll
+  - `GAR` = gesture anchor rebase
+  - `RLS` = release APK build
+- Notes:
+  - `TimelinePanel` now rebases its scrub anchor when the drag direction flips,
+    so reverse movement is no longer measured from an old finger-down anchor
+    while the screen stabilization has already re-anchored its stable frame
+  - proxy reverse scrub no longer uses the per-step exact reverse seek path;
+    it now seeks to a short reverse preroll window and reuses the same
+    progressive decode model as forward scrub
+  - this specifically targets the remaining reverse-side cut/stickiness while
+    preserving the smoothness already reached in forward scrub
+
+### V44
+
+- APK name:
+  - `Fusion X V44 - Reverse Scrub Continuity Fix.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RSC + RPR + RLS`
+- Meaning:
+  - `RSC` = reverse scrub continuity
+  - `RPR` = reverse path refinement
+  - `RLS` = release APK build
+- Notes:
+  - Flutter scrub stabilization now re-anchors immediately when drag direction
+    flips so reverse motion no longer starts from a forward-biased stable frame
+  - proxy scrub sessions now use a refined reverse path with
+    `SEEK_TO_CLOSEST_SYNC` and exact reverse frame resolve to reduce the gap
+    and cut felt when dragging backward after a smooth forward scrub
+  - forward scrub behavior was intentionally preserved while reverse was
+    targeted for parity
+  - `flutter analyze --no-version-check` passed
+  - `flutter test --no-version-check` passed
+  - `flutter build apk --release --no-version-check` passed
+
+### V43
+
+- APK name:
+  - `Fusion X V43 - Reverse Scrub Parity Path.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `RSP + DFR + RLS`
+- Meaning:
+  - `RSP` = reverse scrub parity
+  - `DFR` = direction-flip reanchor
+  - `RLS` = release APK build
+- Notes:
+  - Flutter scrub stabilization now re-anchors the stable scrub frame when the
+    finger reverses direction, so reverse no longer inherits the previous
+    forward-biased hysteresis window
+  - proxy scrub sessions now use a dedicated reverse path and `SEEK_TO_CLOSEST_SYNC`
+    for scrub seeks, which is intended to reduce the reverse-side gap caused by
+    repeated `previous-sync + flush` behavior
+  - forward scrub behavior is intentionally preserved while reverse is brought
+    closer to the same feel
+  - validation pending for whether reverse now feels proportionate to forward
+    under slow and normal drag
+
+### V42
+
+- APK name:
+  - `Fusion X V42 - Directional Scrub Hysteresis.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `DSH + RSP + RLS`
+- Meaning:
+  - `DSH` = directional scrub hysteresis
+  - `RSP` = reverse scrub parity
+  - `RLS` = release APK build
+- Notes:
+  - scrub hysteresis is now direction-aware: the intended drag direction keeps
+    its immediate midpoint response, while only the opposite direction gets the
+    extra guard band needed to suppress accidental bounce
+  - this specifically targets the remaining gap felt at the beginning of
+    reverse scrub after forward scrub had already become smoother in `V41`
+  - validation pending for whether reverse now feels proportionate to forward
+    under both slow and normal-speed drag
+
+### V41
+
+- APK name:
+  - `Fusion X V41 - Stable Frame Hysteresis Scrub.apk`
+- Milestone label:
+  - `FusionX-Beta3`
+- Shorthand:
+  - `SFH + SDD + RLS`
+- Meaning:
+  - `SFH` = stable frame hysteresis
+  - `SDD` = scrub dispatch dedupe
+  - `RLS` = release APK build
+- Notes:
+  - active scrub targets now resolve through a frame-aware hysteresis window so
+    very slow or nearly stationary finger motion no longer bounces as easily
+    between two adjacent frames
+  - Flutter no longer keeps queueing the same scrub frame while it is already
+    pending or actively in flight, which reduces decoder churn and visible
+    preview shake during micro-scrub movement
+  - scrub entry now anchors to a snapped frame immediately, so the preview and
+    timeline start from the same frame-accurate position before drag updates
+  - validation pending for whether this materially reduces the remaining jitter
+    during slow forward and reverse precision scrub on device
+
 ### V40
 
 - APK name:

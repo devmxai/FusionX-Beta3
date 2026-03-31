@@ -136,6 +136,23 @@ class SeekToPayload {
   }
 }
 
+class ScrubToPayload {
+  const ScrubToPayload({
+    required this.timelineTime,
+    this.forceReprepare = false,
+  });
+
+  final EngineTime timelineTime;
+  final bool forceReprepare;
+
+  Map<String, Object> toMap() {
+    return <String, Object>{
+      'timelineTimeUs': timelineTime.inMicroseconds,
+      'forceReprepare': forceReprepare,
+    };
+  }
+}
+
 class EndScrubPayload {
   const EndScrubPayload({
     required this.timelineTime,

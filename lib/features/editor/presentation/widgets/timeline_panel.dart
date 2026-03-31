@@ -92,6 +92,7 @@ class _TimelinePanelState extends State<TimelinePanel> {
   double _rawScrubDx = 0;
   double _rawScrubDy = 0;
   bool _rawScrubLocked = false;
+  int _lastScrubDirectionSign = 0;
   double? _pendingSeconds;
   Timer? _scrollDispatchTimer;
   DateTime? _lastDispatchedAt;
@@ -283,6 +284,7 @@ class _TimelinePanelState extends State<TimelinePanel> {
       _isBackgroundScrubbing = true;
     });
     _scrubAnchorSeconds = _externalCurrentSeconds;
+    _lastScrubDirectionSign = 0;
     _setScrubInteractionActive(true);
   }
 
@@ -365,6 +367,20 @@ class _TimelinePanelState extends State<TimelinePanel> {
       _beginBackgroundScrub();
     }
 
+    final horizontalDirectionSign = event.delta.dx == 0
+        ? 0
+        : (event.delta.dx > 0 ? 1 : -1);
+    if (horizontalDirectionSign != 0) {
+      if (_lastScrubDirectionSign != 0 &&
+          horizontalDirectionSign != _lastScrubDirectionSign) {
+        // Preserve the current move delta when direction flips so the first
+        // reverse event does not collapse to a zero-distance scrub step.
+        _scrubAnchorPointerX = event.localPosition.dx - event.delta.dx;
+        _scrubAnchorSeconds = _backgroundScrubCurrentSeconds;
+      }
+      _lastScrubDirectionSign = horizontalDirectionSign;
+    }
+
     _updateBackgroundScrub(event);
   }
 
@@ -378,6 +394,7 @@ class _TimelinePanelState extends State<TimelinePanel> {
     _rawScrubDx = 0;
     _rawScrubDy = 0;
     _rawScrubLocked = false;
+    _lastScrubDirectionSign = 0;
     _endBackgroundScrub();
   }
 

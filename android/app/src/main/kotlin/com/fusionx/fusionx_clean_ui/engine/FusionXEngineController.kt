@@ -168,7 +168,7 @@ class FusionXEngineController(
         activePlaybackSession.seekToTimelineTimeUs(timelineTimeUs)
     }
 
-    fun scrubTo(timelineTimeUs: Long) {
+    fun scrubTo(timelineTimeUs: Long, forceReprepare: Boolean = false) {
         val activeScrubSession: FusionXScrubSession?
         val activePlaybackSession: FusionXDecoderSession?
         synchronized(lock) {
@@ -180,9 +180,16 @@ class FusionXEngineController(
             activeScrubSession = scrubSession
             activePlaybackSession = playbackSession
         }
-        val handledByProxy = activeScrubSession?.requestScrubAtTimelineTimeUs(timelineTimeUs) == true
+        val handledByProxy =
+            activeScrubSession?.requestScrubAtTimelineTimeUs(
+                timelineTimeUs = timelineTimeUs,
+                forceReprepare = forceReprepare,
+            ) == true
         if (!handledByProxy) {
-            activePlaybackSession?.scrubToTimelineTimeUs(timelineTimeUs)
+            activePlaybackSession?.scrubToTimelineTimeUs(
+                timelineTimeUs = timelineTimeUs,
+                forceReprepare = forceReprepare,
+            )
         }
     }
 

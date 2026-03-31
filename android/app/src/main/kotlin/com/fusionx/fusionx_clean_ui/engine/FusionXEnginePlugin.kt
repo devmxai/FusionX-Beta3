@@ -89,7 +89,11 @@ class FusionXEnginePlugin(
                 "scrubTo" -> {
                     val timelineTimeUs = call.argument<Number>("timelineTimeUs")?.toLong()
                         ?: throw IllegalArgumentException("Missing timelineTimeUs.")
-                    controller.scrubTo(timelineTimeUs)
+                    val forceReprepare = call.argument<Boolean>("forceReprepare") ?: false
+                    controller.scrubTo(
+                        timelineTimeUs = timelineTimeUs,
+                        forceReprepare = forceReprepare,
+                    )
                     result.success(null)
                 }
 

@@ -1,6 +1,7 @@
 package com.fusionx.fusionx_clean_ui.engine
 
 import android.content.Context
+import android.media.MediaExtractor
 
 class FusionXScrubSession(
     private val applicationContext: Context,
@@ -89,7 +90,10 @@ class FusionXScrubSession(
         }
     }
 
-    fun requestScrubAtTimelineTimeUs(timelineTimeUs: Long): Boolean {
+    fun requestScrubAtTimelineTimeUs(
+        timelineTimeUs: Long,
+        forceReprepare: Boolean = false,
+    ): Boolean {
         val state = synchronized(lock) {
             pendingTimelineTimeUs = timelineTimeUs
             val shouldStartPreparing =
@@ -113,7 +117,10 @@ class FusionXScrubSession(
         }
 
         if (state.prepared) {
-            state.session?.scrubToTimelineTimeUs(timelineTimeUs)
+            state.session?.scrubToTimelineTimeUs(
+                timelineTimeUs = timelineTimeUs,
+                forceReprepare = forceReprepare,
+            )
             return true
         }
 
@@ -183,13 +190,18 @@ class FusionXScrubSession(
                             }
                         }
                         pendingTimelineTimeUsToReplay?.let { timelineTimeUs ->
-                            sessionForReplay?.scrubToTimelineTimeUs(timelineTimeUs)
+                            sessionForReplay?.scrubToTimelineTimeUs(
+                                timelineTimeUs = timelineTimeUs,
+                                forceReprepare = true,
+                            )
                         }
                     },
                     renderInitialFrameOnLoad = false,
                     resizeRenderTargetOnLoad = false,
                     scrubForwardContinuationWindowUs = PROXY_SCRUB_FORWARD_CONTINUATION_WINDOW_US,
                     scrubProgressiveTargetWindowUs = PROXY_SCRUB_PROGRESSIVE_TARGET_WINDOW_US,
+                    scrubSeekMode = MediaExtractor.SEEK_TO_CLOSEST_SYNC,
+                    reverseScrubPrerollUs = PROXY_REVERSE_SCRUB_PREROLL_US,
                 )
                 sessionForReplay = nextSession
                 val shouldDiscard = synchronized(lock) {
@@ -228,6 +240,12 @@ class FusionXScrubSession(
         if (sourceDurationUs <= 0L || proxyDurationUs <= 0L) {
             return FusionXMediaTimeMapper.Identity
         }
+        if (asset.sourceFrameTimesUs.isNotEmpty() && asset.proxyFrameTimesUs.isNotEmpty()) {
+            return FusionXMediaTimeMapper.IndexedFrameMap(
+                sourceFrameTimesUs = asset.sourceFrameTimesUs,
+                mediaFrameTimesUs = asset.proxyFrameTimesUs,
+            )
+        }
         return FusionXMediaTimeMapper.DurationRatio(
             sourceDurationUs = sourceDurationUs,
             mediaDurationUs = proxyDurationUs,
@@ -247,5 +265,6 @@ class FusionXScrubSession(
     companion object {
         private const val PROXY_SCRUB_FORWARD_CONTINUATION_WINDOW_US = 1_500_000L
         private const val PROXY_SCRUB_PROGRESSIVE_TARGET_WINDOW_US = 900_000L
+        private const val PROXY_REVERSE_SCRUB_PREROLL_US = 0L
     }
 }

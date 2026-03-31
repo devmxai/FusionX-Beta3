@@ -90,6 +90,14 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
   Future<void>? _activeScrubDispatch;
   Future<void>? _timelineScrubCompletionTask;
   int? _pendingScrubTimelineTimeUs;
+  int? _activeScrubTimelineTimeUs;
+  int? _stableScrubTimelineTimeUs;
+  bool _pendingScrubForceReprepare = false;
+  bool _scrubImmediateDispatchRequested = false;
+  bool _immediateDispatchOnDirectionFlip = false;
+  int? _lastQueuedScrubTimelineTimeUs;
+  int? _lastRawScrubTimelineTimeUs;
+  int _lastScrubDirection = 0;
   bool _nativeScrubReady = false;
   bool _scrubDispatchScheduled = false;
   bool _isTimelineScrubHandoffPending = false;
@@ -138,6 +146,9 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
   void dispose() {
     _eventsSubscription?.cancel();
     _pendingScrubTimelineTimeUs = null;
+    _pendingScrubForceReprepare = false;
+    _scrubImmediateDispatchRequested = false;
+    _immediateDispatchOnDirectionFlip = false;
     _nativeScrubReady = false;
     if (_renderTargetAttached) {
       unawaited(
@@ -243,6 +254,14 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           _sourceFrameDurationUs = sourceFrameDurationUs > 0
               ? sourceFrameDurationUs
               : _defaultFrameDurationUs;
+          _activeScrubTimelineTimeUs = null;
+          _stableScrubTimelineTimeUs = null;
+          _pendingScrubForceReprepare = false;
+          _scrubImmediateDispatchRequested = false;
+          _immediateDispatchOnDirectionFlip = false;
+          _lastQueuedScrubTimelineTimeUs = null;
+          _lastRawScrubTimelineTimeUs = null;
+          _lastScrubDirection = 0;
           _tracks = _buildPhaseOneTracks();
           _selectedClipId = _hasClip ? _primaryClipId : null;
         });
@@ -290,6 +309,14 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
           _trimEndUs = trimEndUs;
           _sourceTimeUs = trimStartUs;
           _timelineTimeUs = 0;
+          _activeScrubTimelineTimeUs = null;
+          _stableScrubTimelineTimeUs = null;
+          _pendingScrubForceReprepare = false;
+          _scrubImmediateDispatchRequested = false;
+          _immediateDispatchOnDirectionFlip = false;
+          _lastQueuedScrubTimelineTimeUs = null;
+          _lastRawScrubTimelineTimeUs = null;
+          _lastScrubDirection = 0;
           _tracks = _buildPhaseOneTracks();
           _selectedClipId = _hasClip ? _primaryClipId : null;
         });
@@ -692,6 +719,9 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     _queueScrubDispatch(_timelineTimeUs);
     await _flushPendingScrubDispatches();
     _pendingScrubTimelineTimeUs = null;
+    _pendingScrubForceReprepare = false;
+    _scrubImmediateDispatchRequested = false;
+    _immediateDispatchOnDirectionFlip = false;
     await _engineBridge.dispatch(
       FusionXEngineCommand(
         type: FusionXEngineCommandType.endScrub,
@@ -739,12 +769,40 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     }
   }
 
-  void _queueScrubDispatch(int timelineTimeUs) {
-    _pendingScrubTimelineTimeUs = timelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+  void _queueScrubDispatch(
+    int timelineTimeUs, {
+    bool forceReprepare = false,
+    bool immediate = false,
+  }) {
+    final clampedTimelineTimeUs =
+        timelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+    if (!forceReprepare &&
+        _lastQueuedScrubTimelineTimeUs == clampedTimelineTimeUs &&
+        _pendingScrubTimelineTimeUs == null &&
+        _activeScrubTimelineTimeUs == null) {
+      return;
+    }
+    if (!forceReprepare &&
+        (_pendingScrubTimelineTimeUs == clampedTimelineTimeUs ||
+            _activeScrubTimelineTimeUs == clampedTimelineTimeUs)) {
+      return;
+    }
+    if (forceReprepare) {
+      _activeScrubTimelineTimeUs = null;
+    }
+    if (_pendingScrubTimelineTimeUs != clampedTimelineTimeUs) {
+      _pendingScrubForceReprepare = false;
+    }
+    _pendingScrubForceReprepare =
+        _pendingScrubForceReprepare || forceReprepare;
+    _scrubImmediateDispatchRequested =
+        _scrubImmediateDispatchRequested || immediate;
+    _lastQueuedScrubTimelineTimeUs = clampedTimelineTimeUs;
+    _pendingScrubTimelineTimeUs = clampedTimelineTimeUs;
     if (!_nativeScrubReady) {
       return;
     }
-    _scheduleScrubDispatch();
+    _scheduleScrubDispatch(immediate: immediate);
   }
 
   Future<void> _flushPendingScrubDispatches() async {
@@ -753,12 +811,12 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     }
   }
 
-  void _scheduleScrubDispatch() {
+  void _scheduleScrubDispatch({bool immediate = false}) {
     if (!_nativeScrubReady || _scrubDispatchScheduled) {
       return;
     }
     _scrubDispatchScheduled = true;
-    SchedulerBinding.instance.scheduleFrameCallback((_) {
+    void runDispatch() {
       _scrubDispatchScheduled = false;
       if (!mounted || !_nativeScrubReady) {
         return;
@@ -768,26 +826,46 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
         return;
       }
       _pendingScrubTimelineTimeUs = null;
-      final task = _dispatchScrubTo(nextTimelineTimeUs);
+      final forceReprepare = _pendingScrubForceReprepare;
+      _pendingScrubForceReprepare = false;
+      _scrubImmediateDispatchRequested = false;
+      _activeScrubTimelineTimeUs = nextTimelineTimeUs;
+      final task = _dispatchScrubTo(
+        nextTimelineTimeUs,
+        forceReprepare: forceReprepare,
+      );
       _activeScrubDispatch = task;
       unawaited(task.whenComplete(() {
         if (identical(_activeScrubDispatch, task)) {
           _activeScrubDispatch = null;
         }
+        if (_activeScrubTimelineTimeUs == nextTimelineTimeUs) {
+          _activeScrubTimelineTimeUs = null;
+        }
         if (mounted && _pendingScrubTimelineTimeUs != null) {
-          _scheduleScrubDispatch();
+          _scheduleScrubDispatch(immediate: _scrubImmediateDispatchRequested);
         }
       }));
-    });
+    }
+
+    if (immediate || _scrubImmediateDispatchRequested) {
+      scheduleMicrotask(runDispatch);
+      return;
+    }
+    SchedulerBinding.instance.scheduleFrameCallback((_) => runDispatch());
   }
 
-  Future<void> _dispatchScrubTo(int timelineTimeUs) async {
+  Future<void> _dispatchScrubTo(
+    int timelineTimeUs, {
+    required bool forceReprepare,
+  }) async {
     try {
       await _engineBridge.dispatch(
         FusionXEngineCommand(
           type: FusionXEngineCommandType.scrubTo,
-          payload: SeekToPayload(
+          payload: ScrubToPayload(
             timelineTime: EngineTime.fromMicroseconds(timelineTimeUs),
+            forceReprepare: forceReprepare,
           ).toMap(),
         ),
       );
@@ -815,7 +893,7 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     final clampedSeconds = seconds.clamp(0.0, _timelineDuration).toDouble();
     final rawTimelineTimeUs = (clampedSeconds * 1000000).round();
     final timelineTimeUs = _isTimelineScrubbing
-        ? rawTimelineTimeUs.clamp(0, _trimmedTimelineDurationUs)
+        ? _resolveStableScrubTimelineTimeUs(rawTimelineTimeUs)
         : _snapTimelineTimeUs(rawTimelineTimeUs);
     _timelineTimeUs = timelineTimeUs;
     _previewTimelineTimeUs.value = timelineTimeUs;
@@ -823,7 +901,12 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
       return;
     }
     if (_isTimelineScrubbing) {
-      _queueScrubDispatch(timelineTimeUs);
+      final immediateDispatch = _immediateDispatchOnDirectionFlip;
+      _immediateDispatchOnDirectionFlip = false;
+      _queueScrubDispatch(
+        timelineTimeUs,
+        immediate: immediateDispatch,
+      );
       return;
     }
     setState(() {});
@@ -851,6 +934,104 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
     return snapped.clamp(0, _trimmedTimelineDurationUs);
   }
 
+  int _snapTimelineTimeUsTowardDirection(
+    int timelineTimeUs,
+    int direction,
+  ) {
+    final frameDurationUs = _sourceFrameDurationUs > 0
+        ? _sourceFrameDurationUs
+        : _defaultFrameDurationUs;
+    if (frameDurationUs <= 1 || direction >= 0) {
+      return _snapTimelineTimeUs(timelineTimeUs);
+    }
+    final clampedTimelineTimeUs =
+        timelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+    final snapped = (clampedTimelineTimeUs ~/ frameDurationUs) * frameDurationUs;
+    return snapped.clamp(0, _trimmedTimelineDurationUs);
+  }
+
+  int _stepStableTimelineTimeUs(
+    int timelineTimeUs,
+    int direction,
+  ) {
+    final frameDurationUs = _sourceFrameDurationUs > 0
+        ? _sourceFrameDurationUs
+        : _defaultFrameDurationUs;
+    if (frameDurationUs <= 1 || direction == 0) {
+      return timelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+    }
+    final steppedTimelineTimeUs = direction < 0
+        ? timelineTimeUs - frameDurationUs
+        : timelineTimeUs + frameDurationUs;
+    return steppedTimelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+  }
+
+  int _resolveStableScrubTimelineTimeUs(int rawTimelineTimeUs) {
+    final clampedRawTimelineTimeUs =
+        rawTimelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+    final frameDurationUs = _sourceFrameDurationUs > 0
+        ? _sourceFrameDurationUs
+        : _defaultFrameDurationUs;
+    if (frameDurationUs <= 1) {
+      _stableScrubTimelineTimeUs = clampedRawTimelineTimeUs;
+      return clampedRawTimelineTimeUs;
+    }
+
+    final lastRawScrubTimelineTimeUs = _lastRawScrubTimelineTimeUs;
+    final rawDirection = lastRawScrubTimelineTimeUs == null
+        ? 0
+        : clampedRawTimelineTimeUs.compareTo(lastRawScrubTimelineTimeUs);
+    final didFlipDirection = rawDirection != 0 &&
+        _lastScrubDirection != 0 &&
+        rawDirection != _lastScrubDirection;
+
+    var currentStableTimelineTimeUs =
+        _stableScrubTimelineTimeUs ?? _snapTimelineTimeUs(clampedRawTimelineTimeUs);
+    if (didFlipDirection) {
+      currentStableTimelineTimeUs = rawDirection < 0
+          ? _stepStableTimelineTimeUs(currentStableTimelineTimeUs, rawDirection)
+          : _snapTimelineTimeUsTowardDirection(
+              clampedRawTimelineTimeUs,
+              rawDirection,
+            );
+      _stableScrubTimelineTimeUs = currentStableTimelineTimeUs;
+      _immediateDispatchOnDirectionFlip = true;
+    }
+
+    final hysteresisUs = didFlipDirection ? 0 : math.max(2000, frameDurationUs ~/ 6);
+    var forwardThresholdUs =
+        currentStableTimelineTimeUs + (frameDurationUs ~/ 2);
+    var backwardThresholdUs =
+        currentStableTimelineTimeUs - (frameDurationUs ~/ 2);
+
+    if (!didFlipDirection && clampedRawTimelineTimeUs > currentStableTimelineTimeUs) {
+      backwardThresholdUs -= hysteresisUs;
+    } else if (!didFlipDirection &&
+        clampedRawTimelineTimeUs < currentStableTimelineTimeUs) {
+      forwardThresholdUs += hysteresisUs;
+    }
+
+    var nextStableTimelineTimeUs = currentStableTimelineTimeUs;
+    if (clampedRawTimelineTimeUs >= forwardThresholdUs) {
+      final framesToAdvance =
+          1 + ((clampedRawTimelineTimeUs - forwardThresholdUs) ~/ frameDurationUs);
+      nextStableTimelineTimeUs =
+          currentStableTimelineTimeUs + (framesToAdvance * frameDurationUs);
+    } else if (clampedRawTimelineTimeUs <= backwardThresholdUs) {
+      final framesToRewind =
+          1 + ((backwardThresholdUs - clampedRawTimelineTimeUs) ~/ frameDurationUs);
+      nextStableTimelineTimeUs =
+          currentStableTimelineTimeUs - (framesToRewind * frameDurationUs);
+    }
+
+    final clampedStableTimelineTimeUs =
+        nextStableTimelineTimeUs.clamp(0, _trimmedTimelineDurationUs);
+    _lastRawScrubTimelineTimeUs = clampedRawTimelineTimeUs;
+    _lastScrubDirection = rawDirection;
+    _stableScrubTimelineTimeUs = clampedStableTimelineTimeUs;
+    return clampedStableTimelineTimeUs;
+  }
+
   int get _trimmedTimelineDurationUs =>
       (_trimEndUs - _trimStartUs).clamp(0, _sourceDurationUs);
 
@@ -863,11 +1044,40 @@ class _FusionXCleanUiScreenState extends State<FusionXCleanUiScreen> {
       if (isScrubbing) {
         _isTimelineScrubHandoffPending = false;
         _isTimelineScrubSettling = false;
+        _stableScrubTimelineTimeUs = _snapTimelineTimeUs(_timelineTimeUs);
+        _activeScrubTimelineTimeUs = null;
+        _pendingScrubForceReprepare = false;
+        _scrubImmediateDispatchRequested = false;
+        _immediateDispatchOnDirectionFlip = false;
+        _lastQueuedScrubTimelineTimeUs = null;
+        _lastRawScrubTimelineTimeUs = _timelineTimeUs;
+        _lastScrubDirection = 0;
+        _timelineTimeUs = _stableScrubTimelineTimeUs!;
       } else if (_hasClip && _canUseNativePlayback) {
         _isTimelineScrubSettling = true;
         _isTimelineScrubHandoffPending = true;
+        _activeScrubTimelineTimeUs = null;
+        _stableScrubTimelineTimeUs = null;
+        _pendingScrubForceReprepare = false;
+        _scrubImmediateDispatchRequested = false;
+        _immediateDispatchOnDirectionFlip = false;
+        _lastQueuedScrubTimelineTimeUs = null;
+        _lastRawScrubTimelineTimeUs = null;
+        _lastScrubDirection = 0;
+      } else {
+        _activeScrubTimelineTimeUs = null;
+        _stableScrubTimelineTimeUs = null;
+        _pendingScrubForceReprepare = false;
+        _scrubImmediateDispatchRequested = false;
+        _immediateDispatchOnDirectionFlip = false;
+        _lastQueuedScrubTimelineTimeUs = null;
+        _lastRawScrubTimelineTimeUs = null;
+        _lastScrubDirection = 0;
       }
     });
+    if (isScrubbing) {
+      _previewTimelineTimeUs.value = _timelineTimeUs;
+    }
     if (!isScrubbing) {
       _previewTimelineTimeUs.value = _timelineTimeUs;
       if (_hasClip && _canUseNativePlayback) {
